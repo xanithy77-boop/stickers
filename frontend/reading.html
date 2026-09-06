@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>Cove 共影</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f4f2ee; color: #1f1d1a; display: flex; height: 100vh; overflow: hidden;
+  }
+  aside {
+    width: 320px; border-right: 1px solid #ddd8cf; padding: 16px; overflow-y: auto;
+    background: #efece5; flex-shrink: 0;
+  }
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .player-area { flex: 1; display: flex; flex-direction: column; padding: 16px; overflow: hidden; }
+  .player-frame { flex: 1; background: #000; border-radius: 8px; overflow: hidden; position: relative; }
+  .player-frame iframe { width: 100%; height: 100%; border: 0; }
+  h1 { font-size: 15px; margin: 0 0 12px; letter-spacing: .04em; color: #6b6355; }
+  .import-box { display: flex; gap: 6px; margin-bottom: 16px; }
+  input, textarea, button {
+    font: inherit; border-radius: 6px; border: 1px solid #cfc9bc; padding: 8px 10px; background: #fff;
+  }
+  input { flex: 1; min-width: 0; }
+  button { cursor: pointer; background: #8a7f6a; color: #fff; border: none; }
+  button:hover { background: #756b59; }
+  button.secondary { background: #fff; color: #4a453b; border: 1px solid #cfc9bc; }
+  .video-item {
+    padding: 10px; border-radius: 8px; margin-bottom: 8px; cursor: pointer; background: #fff;
+    border: 1px solid #e4dfd3; font-size: 13px;
+  }
+  .video-item.active { border-color: #8a7f6a; box-shadow: 0 0 0 1px #8a7f6a inset; }
+  .video-item .status { font-size: 11px; color: #9a8f7a; margin-top: 4px; }
+  .status.ready { color: #4f8a5a; }
+  .status.failed { color: #b5544a; }
+  .video-title { font-weight: 600; word-break: break-all; }
+  .video-meta { color: #8a8272; font-size: 12px; }
+  .transcript-bar {
+    padding: 8px 16px; background: #efece5; border-top: 1px solid #ddd8cf; font-size: 12px;
+    color: #6b6355; white-space: pre-wrap; max-height: 72px; overflow-y: auto;
+  }
+  .chat-panel {
+    height: 42%; min-height: 220px; border-top: 1px solid #ddd8cf; background: #faf9f6;
+    display: flex; flex-direction: column;
+  }
+  .chat-log { flex: 1; overflow-y: auto; padding: 12px 16px; }
+  .msg { margin-bottom: 12px; max-width: 80%; padding: 8px 12px; border-radius: 10px; font-size: 13.5px; line-height: 1.5; }
+  .msg.user { margin-left: auto; background: #8a7f6a; color: #fff; }
+  .msg.ai { background: #eeeae0; color: #262420; }
+  .chat-input-row { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid #ddd8cf; }
+  .chat-input-row input { flex: 1; }
+  .timestamp-row { display: flex; align-items: center; gap: 8px; padding: 0 16px 10px; font-size: 12px; color: #8a8272; }
+  .empty-hint { color: #a89f8c; font-size: 13px; padding: 20px 4px; }
+</style>
+</head>
+<body>
+
+<aside>
+  <h1>共影 · 视频列表</h1>
+  <div class="import-box">
+    <input id="urlInput" placeholder="粘贴视频链接（YouTube / B站 等）" />
+    <button onclick="importFromUrl()">导入</button>
+  </div>
+  <div id="videoList"></div>
+</aside>
+
+<main>
+  <div class="player-area">
+    <div class="player-frame" id="playerFrame">
+      <div style="color:#999;display:flex;align-items:center;justify-content:center;height:100%;">
+        选择或导入一个视频开始共影
+      </div>
+    </div>
+  </div>
+
+  <div class="transcript-bar" id="transcriptBar">附近字幕会显示在这里</div>
+
+  <div class="timestamp-row">
+    当前时间点（秒）：
+    <input id="timeInput" type="number" value="0" style="width:90px" />
+    <button class="secondary" onclick="refreshTranscriptWindow()">刷新字幕窗口</button>
+  </div>
+
+  <div class="chat-panel">
+    <div class="chat-log" id="chatLog">
+      <div class="empty-hint">在这里"问这一幕"，AI 只会依据播放点之前的字幕回答。</div>
+    </div>
+    <div class="chat-input-row">
+      <input id="questionInput" placeholder="这里在说什么？" onkeydown="if(event.key==='Enter') askThisMoment()" />
+      <button onclick="askThisMoment()">问这一幕</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = '';
+let videos = [];
+let currentVideoId = null;
+let pollTimer = null;
+
+async function api(method, path, body) {
+  const res = await fetch(API + path, {
+    method,
+    headers: body ? {'Content-Type': 'application/json'} : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || res.statusText);
+  }
+  return res.json();
+}
+
+function extractYoutubeId(url) {
+  const m = url.match(/(?:youtu\.be\/|v=|embed\/)([a-zA-Z0-9_-]{6,})/);
+  return m ? m[1] : null;
+}
+
+async function importFromUrl() {
+  const input = document.getElementById('urlInput');
+  const url = input.value.trim();
+  if (!url) return;
+  try {
+    const res = await api('POST', '/api/videos/from-url', {url});
+    input.value = '';
+    await loadVideos();
+    selectVideo(res.video_id);
+    startPolling();
+  } catch (e) {
+    alert('导入失败：' + e.message);
+  }
+}
+
+async function loadVideos() {
+  videos = await api('GET', '/api/videos');
+  renderVideoList();
+}
+
+function renderVideoList() {
+  const el = document.getElementById('videoList');
+  if (!videos.length) {
+    el.innerHTML = '<div class="empty-hint">还没有导入任何视频</div>';
+    return;
+  }
+  el.innerHTML = videos.map(v => `
+    <div class="video-item ${v.video_id === currentVideoId ? 'active' : ''}" onclick="selectVideo('${v.video_id}')">
+      <div class="video-title">${escapeHtml(v.title || v.video_id)}</div>
+      <div class="video-meta">${v.source_url ? escapeHtml(v.source_url).slice(0, 40) : ''}</div>
+      <div class="status ${v.status}">${statusLabel(v.status)} ${v.error ? '· ' + escapeHtml(v.error) : ''}</div>
+    </div>
+  `).join('');
+}
+
+function statusLabel(status) {
+  return {pending: '等待处理', processing: '处理中…', ready: '就绪', ready_partial: '部分就绪（无字幕）', failed: '失败'}[status] || status;
+}
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function selectVideo(videoId) {
+  currentVideoId = videoId;
+  renderVideoList();
+  const video = videos.find(v => v.video_id === videoId);
+  const frame = document.getElementById('playerFrame');
+  const ytId = video && video.source_url ? extractYoutubeId(video.source_url) : null;
+  if (ytId) {
+    frame.innerHTML = `<iframe src="https://www.youtube.com/embed/${ytId}" allowfullscreen></iframe>`;
+  } else {
+    frame.innerHTML = `<div style="color:#999;display:flex;align-items:center;justify-content:center;height:100%;">暂不支持内嵌预览该来源，可在原平台观看，Cove 只负责陪聊</div>`;
+  }
+  document.getElementById('chatLog').innerHTML = '<div class="empty-hint">在这里"问这一幕"，AI 只会依据播放点之前的字幕回答。</div>';
+  refreshTranscriptWindow();
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    await loadVideos();
+    const v = videos.find(x => x.video_id === currentVideoId);
+    if (v && (v.status === 'ready' || v.status === 'ready_partial' || v.status === 'failed')) {
+      clearInterval(pollTimer);
+    }
+  }, 2000);
+}
+
+async function refreshTranscriptWindow() {
+  if (!currentVideoId) return;
+  const t = parseFloat(document.getElementById('timeInput').value || '0');
+  try {
+    const res = await api('GET', `/api/videos/${currentVideoId}/transcript-window?t=${t}`);
+    const bar = document.getElementById('transcriptBar');
+    if (!res.cues.length) {
+      bar.textContent = '这个时间点附近没有字幕';
+    } else {
+      bar.textContent = res.cues.map(c => `[${c.start.toFixed(1)}s] ${c.text}`).join('\n');
+    }
+  } catch (e) {
+    document.getElementById('transcriptBar').textContent = '字幕还没准备好：' + e.message;
+  }
+}
+
+async function askThisMoment() {
+  if (!currentVideoId) { alert('先选一个视频'); return; }
+  const input = document.getElementById('questionInput');
+  const question = input.value.trim();
+  if (!question) return;
+  const timestamp = parseFloat(document.getElementById('timeInput').value || '0');
+
+  appendMsg('user', question);
+  input.value = '';
+
+  try {
+    const watch = await api('POST', `/api/videos/${currentVideoId}/watch-message`, {
+      timestamp, question, scope: 'moment',
+    });
+    const chatRes = await api('POST', '/api/chat', {
+      content: watch.content,
+      model_content: watch.model_content,
+    });
+    appendMsg('ai', chatRes.reply);
+  } catch (e) {
+    appendMsg('ai', '出错了：' + e.message);
+  }
+}
+
+function appendMsg(role, text) {
+  const log = document.getElementById('chatLog');
+  const hint = log.querySelector('.empty-hint');
+  if (hint) hint.remove();
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+loadVideos();
+</script>
+</body>
+</html>

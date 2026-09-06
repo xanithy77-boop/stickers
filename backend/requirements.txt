@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+aiosqlite
+httpx
+pydantic
+python-multipart
+yt-dlp
