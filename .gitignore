@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+data/cove.db
+data/videos/*/platform_subtitle*
